@@ -1,42 +1,49 @@
-const { db } = require('../config/firebase'); // Importa la instancia de Firestore
+// Importa la instancia de la base de datos de Firebase,
+// la cual se asume que está configurada en la ruta '../config/firebase'.
+const { db } = require('../config/firebase');
 
-/**
- * Clase Modelo para gestionar las Categorías de productos.
- * Esta clase encapsula la lógica de negocio y la interacción con la base de datos Firestore.
- */
+// Importa una utilidad que se encarga de generar IDs autoincrementables.
+// Esto es crucial porque Firestore no tiene autoincremento nativo como las DB SQL.
+const AutoIncrement = require('../utils/autoIncrement');
+
+// --- Definición de la Clase Modelo 'Categoria' ---
 class Categoria {
-    /**
-     * Constructor para crear una nueva instancia de Categoría.
-     * @param {object} data - Objeto con los datos iniciales de la categoría.
-     */
+    // El constructor de la clase. Se llama cuando se crea una nueva instancia de Categoría.
+    // Recibe un objeto 'data' con las propiedades iniciales.
     constructor(data) {
-        // 1. Asignación de propiedades
+        // Asigna los valores de las propiedades principales.
         this.nombre = data.nombre;
         this.descripcion = data.descripcion;
         this.imagen = data.imagen;
-        // 2. Control de estado: 'activo' por defecto es true, a menos que se especifique lo contrario
+        
+        // Establece 'activo' como 'true' por defecto si no se proporciona en 'data'.
+        // Esto es una buena práctica para el 'soft delete' (eliminación lógica).
         this.activo = data.activo !== undefined ? data.activo : true;
-        // 3. Marca de tiempo de creación
+        
+        // Registra la marca de tiempo de la creación.
         this.fechaCreacion = new Date();
     }
 
-    // -------------------------------------------------------------------------
-    // Métodos de Instancia (Operaciones de Escritura)
-    // -------------------------------------------------------------------------
-
-    /**
-     * Guarda la nueva instancia de Categoría en Firestore.
-     * Genera un ID de documento único.
-     * @returns {object} El objeto de la categoría guardada, incluyendo el ID.
-     */
+    // --- Método de Instancia: Guardar (Crear) un Nuevo Documento ---
+    // Método asíncrono que guarda la instancia actual como un nuevo documento en Firestore.
     async save() {
         try {
-            // 1. Crear una referencia de documento, dejando que Firestore genere el ID
+            // 1. Generar ID Autoincrementable:
+            // Llama a la utilidad 'AutoIncrement' para obtener el siguiente ID secuencial para la colección 'categorias'.
+            const categoriaId = await AutoIncrement.generateId('categorias');
+            
+            // 2. Obtener Referencia del Documento:
+            // Obtiene una referencia a un nuevo documento en la colección 'categorias'.
+            // Al usar .doc() sin argumentos, Firestore genera un 'ID de documento' único.
             const categoriaRef = db.collection('categorias').doc();
             
-            // 2. Preparar el objeto de datos a guardar (incluyendo el ID generado)
+            // 3. Preparar los Datos a Guardar:
+            // Combina los datos de la instancia con los IDs generados.
+            // 'id': El ID autoincrementable (usado para consultas por el usuario/API).
+            // 'firestoreId': El ID único generado por Firestore (usado para manipulación interna).
             const categoriaData = {
-                id: categoriaRef.id, // Almacenar el ID como un campo dentro del documento
+                id: categoriaId,
+                firestoreId: categoriaRef.id,
                 nombre: this.nombre,
                 descripcion: this.descripcion,
                 imagen: this.imagen,
@@ -44,42 +51,46 @@ class Categoria {
                 fechaCreacion: this.fechaCreacion
             };
             
-            // 3. Escribir los datos en Firestore
+            // 4. Escribir en Firestore:
+            // Usa el método 'set' para crear el documento con los datos preparados.
             await categoriaRef.set(categoriaData);
             
-            console.log(`✅ Categoría creada: ${this.nombre}`);
-            
-            // 4. Devolver la categoría con su ID
-            return { id: categoriaRef.id, ...categoriaData };
+            // 5. Retroalimentación y Retorno:
+            console.log(`✅ Categoría creada: ${categoriaId} - ${this.nombre}`);
+            // Retorna el ID y los datos completos de la categoría creada.
+            return { id: categoriaId, ...categoriaData };
             
         } catch (error) {
             console.error('❌ Error creando categoría:', error);
-            // Re-lanzar el error para ser manejado por el controlador
-            throw error; 
+            // Propaga el error para que sea manejado por el código que llamó a 'save()'.
+            throw error;
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Métodos Estáticos (Operaciones de Lectura y Modificación)
-    // -------------------------------------------------------------------------
-
-    /**
-     * Busca y recupera una categoría por su ID de documento.
-     * @param {string} id - ID del documento de la categoría.
-     * @returns {object|null} El objeto de la categoría encontrada o null si no existe.
-     */
+    // --- Método Estático: Buscar por ID Autoincrementable ---
+    // Método de clase para buscar un documento usando el campo 'id' autoincrementable.
     static async findById(id) {
         try {
-            // 1. Obtener el documento por ID
-            const doc = await db.collection('categorias').doc(id).get();
+            // 1. Ejecutar Consulta:
+            // Crea una consulta en la colección 'categorias'.
+            const snapshot = await db.collection('categorias')
+                // Filtra por el campo 'id' (el autoincrementable, NO el firestoreId).
+                .where('id', '==', id)
+                // Limita la respuesta a un solo documento (ya que 'id' es único).
+                .limit(1)
+                .get(); // Ejecuta la consulta.
             
-            // 2. Verificar si el documento existe
-            if (!doc.exists) {
+            // 2. Verificar Resultado:
+            // Si la colección de documentos resultantes está vacía, la categoría no existe.
+            if (snapshot.empty) {
                 return null;
             }
             
-            // 3. Devolver los datos del documento (incluyendo el ID)
-            return { id: doc.id, ...doc.data() };
+            // 3. Extraer y Retornar Datos:
+            // Obtiene el primer (y único) documento.
+            const doc = snapshot.docs[0];
+            // Retorna un objeto que incluye el 'firestoreId' y todos los datos del documento.
+            return { firestoreId: doc.id, ...doc.data() };
             
         } catch (error) {
             console.error('❌ Error buscando categoría:', error);
@@ -87,19 +98,23 @@ class Categoria {
         }
     }
 
-    /**
-     * Recupera todas las categorías que están activas.
-     * @returns {Array<object>} Una lista de objetos de categorías activas.
-     */
+    // --- Método Estático: Obtener Todas las Categorías Activas ---
+    // Método de clase para obtener todas las categorías que no han sido eliminadas lógicamente.
     static async findAll() {
         try {
-            // 1. Crear una consulta para obtener solo documentos donde 'activo' es true
+            // 1. Ejecutar Consulta:
             const snapshot = await db.collection('categorias')
+                // Solo trae las categorías donde el campo 'activo' sea 'true'.
                 .where('activo', '==', true)
                 .get();
                 
-            // 2. Mapear los documentos a un array de objetos con sus IDs
-            return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            // 2. Mapear Resultados:
+            // Transforma el array de documentos de Firestore ('snapshot.docs')
+            // en un array de objetos JavaScript, incluyendo el 'firestoreId'.
+            return snapshot.docs.map(doc => ({
+                firestoreId: doc.id,
+                ...doc.data()
+            }));
             
         } catch (error) {
             console.error('❌ Error obteniendo categorías:', error);
@@ -107,19 +122,35 @@ class Categoria {
         }
     }
 
-    /**
-     * Actualiza uno o más campos de una categoría específica.
-     * @param {string} id - ID del documento a actualizar.
-     * @param {object} data - Objeto con los campos y valores a modificar.
-     */
+    // --- Método Estático: Actualizar un Documento ---
+    // Método de clase para actualizar un documento por su 'id' autoincrementable.
     static async update(id, data) {
         try {
-            // 1. Actualizar el documento por ID, añadiendo la fecha de actualización
-            await db.collection('categorias').doc(id).update({
-                ...data, // Esparcir los campos recibidos (nombre, descripcion, imagen, etc.)
+            // 1. Buscar el Documento:
+            // Primero se localiza el documento por el 'id' para obtener su 'firestoreId'.
+            const snapshot = await db.collection('categorias')
+                .where('id', '==', id)
+                .limit(1)
+                .get();
+            
+            // 2. Manejar No Encontrado:
+            if (snapshot.empty) {
+                throw new Error('Categoría no encontrada');
+            }
+            
+            // 3. Obtener Referencia de Actualización:
+            const doc = snapshot.docs[0];
+            
+            // 4. Actualizar en Firestore:
+            // Usa el 'firestoreId' (doc.id) para referenciar y actualizar el documento.
+            // Utiliza 'update' para modificar solo los campos proporcionados en 'data'
+            // y añade una marca de tiempo de actualización.
+            await db.collection('categorias').doc(doc.id).update({
+                ...data,
                 fechaActualizacion: new Date()
             });
             
+            // 5. Retroalimentación:
             console.log(`✅ Categoría actualizada: ${id}`);
             
         } catch (error) {
@@ -128,19 +159,34 @@ class Categoria {
         }
     }
 
-    /**
-     * Realiza una eliminación suave (soft delete) marcando la categoría como inactiva.
-     * Esto preserva el historial de la base de datos.
-     * @param {string} id - ID del documento a eliminar suavemente.
-     */
+    // --- Método Estático: Eliminación Lógica (Soft Delete) ---
+    // Método de clase para marcar un documento como inactivo en lugar de borrarlo físicamente.
     static async delete(id) {
         try {
-            // 1. Actualizar el campo 'activo' a false y registrar la fecha de eliminación
-            await db.collection('categorias').doc(id).update({
+            // 1. Buscar el Documento:
+            // Similar a 'update', se busca el documento por 'id' para obtener su 'firestoreId'.
+            const snapshot = await db.collection('categorias')
+                .where('id', '==', id)
+                .limit(1)
+                .get();
+            
+            // 2. Manejar No Encontrado:
+            if (snapshot.empty) {
+                throw new Error('Categoría no encontrada');
+            }
+            
+            // 3. Obtener Referencia de Actualización:
+            const doc = snapshot.docs[0];
+            
+            // 4. Actualizar Estado (Eliminación Lógica):
+            // Actualiza el documento para establecer 'activo' en 'false'
+            // y registra la fecha de eliminación lógica.
+            await db.collection('categorias').doc(doc.id).update({
                 activo: false,
                 fechaEliminacion: new Date()
             });
             
+            // 5. Retroalimentación:
             console.log(`✅ Categoría marcada como inactiva: ${id}`);
             
         } catch (error) {
@@ -150,4 +196,5 @@ class Categoria {
     }
 }
 
-module.exports = Categoria; // Exportar la clase modelo
+// Exporta la clase para que pueda ser utilizada en otras partes de la aplicación.
+module.exports = Categoria;

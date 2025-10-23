@@ -1,62 +1,60 @@
-const { db } = require('../config/firebase'); // Importa la instancia de Firestore
+// Importa la instancia de la base de datos de Firebase.
+const { db } = require('../config/firebase');
 
-/**
- * Clase Modelo para gestionar los Pedidos.
- * Encapsula la lógica de negocio del pedido, la estructura de datos y la interacción con Firestore.
- */
+// Importa la utilidad para generar IDs numéricos secuenciales.
+// (Necesario porque Firestore no tiene autoincremento nativo).
+const AutoIncrement = require('../utils/autoIncrement');
+
+// --- Definición de la Clase Modelo 'Pedido' ---
 class Pedido {
-    /**
-     * Constructor para crear una nueva instancia de Pedido.
-     * @param {object} data - Objeto con los datos iniciales del pedido.
-     */
+    // El constructor inicializa una nueva instancia de Pedido con los datos proporcionados.
     constructor(data) {
-        // 1. Datos del cliente y envío
+        // Asigna las propiedades básicas del cliente y la orden.
         this.cliente = data.cliente;
         this.email = data.email;
         this.telefono = data.telefono;
         this.direccion = data.direccion;
-        
-        // 2. Detalle de productos y total
-        this.productos = data.productos; // Array de {productoId, cantidad, precio}
+        this.productos = data.productos; // Asume que es un array de objetos (productos, cantidad, precio).
         this.total = data.total;
         
-        // 3. Gestión del estado (por defecto 'pendiente')
-        // Estados posibles: pendiente, confirmado, en_proceso, enviado, entregado, cancelado
-        this.estado = data.estado || 'pendiente'; 
+        // Asigna el estado. Si no se provee, el valor por defecto es 'pendiente'.
+        this.estado = data.estado || 'pendiente';
         
-        // 4. Referencia al vendedor/creador
+        // Propiedad para vincular el pedido a un usuario/vendedor específico.
         this.vendedorId = data.vendedorId;
+        
+        // Observaciones con valor por defecto vacío.
         this.observaciones = data.observaciones || '';
         
-        // 5. Marca de tiempo de creación
+        // Registra la marca de tiempo de la creación del objeto.
         this.fechaCreacion = new Date();
     }
 
-    // -------------------------------------------------------------------------
-    // Métodos de Instancia (Operaciones de Escritura)
-    // -------------------------------------------------------------------------
-
-    /**
-     * Guarda la nueva instancia de Pedido en Firestore.
-     * Genera un ID de documento y un número de pedido consecutivo.
-     * @returns {object} El objeto del pedido guardado, incluyendo el ID y número.
-     */
+    // --- Método de Instancia: Guardar (Crear) un Nuevo Pedido ---
+    // Guarda el objeto actual como un documento en la colección 'pedidos' de Firestore.
     async save() {
         try {
-            // 1. Generar un nuevo ID de documento
-            const pedidoRef = db.collection('pedidos').doc();
-
-            // 2. Generar el número de pedido consecutivo basado en la fecha
-            const numeroPedido = await this.generarNumeroPedido();
+            // 1. Generar ID Autoincrementable:
+            // Obtiene el siguiente ID secuencial para el campo 'id' numérico del documento.
+            const pedidoId = await AutoIncrement.generateId('pedidos');
             
-            // 3. Preparar el objeto de datos a guardar
+            // 2. Obtener Referencia del Documento:
+            // Crea una referencia con un ID de Firestore único (firestoreId).
+            const pedidoRef = db.collection('pedidos').doc();
+            
+            // 3. Generar el Número de Pedido Único de Negocio:
+            // Llama a un método interno para generar el número de pedido con formato (e.g., PED-202510-0001).
+            const numeroPedido = await this.generarNumeroPedido();
+
+            // 4. Preparar los Datos a Guardar:
             const pedidoData = {
-                id: pedidoRef.id,
-                numero: numeroPedido, // Campo único/consecutivo generado
+                id: pedidoId, // El ID numérico secuencial.
+                firestoreId: pedidoRef.id, // El ID de documento de Firestore.
+                numero: numeroPedido, // El número de pedido con formato especial.
+                // ... el resto de las propiedades del objeto Pedido
                 cliente: this.cliente,
                 email: this.email,
-                telefono: this.telefono,
-                direccion: this.direccion,
+                //... (resto de campos)
                 productos: this.productos,
                 total: this.total,
                 estado: this.estado,
@@ -65,13 +63,12 @@ class Pedido {
                 fechaCreacion: this.fechaCreacion
             };
             
-            // 4. Escribir los datos en Firestore
+            // 5. Escribir en Firestore:
             await pedidoRef.set(pedidoData);
             
-            console.log(`✅ Pedido creado: ${pedidoData.numero}`);
-            
-            // 5. Devolver el pedido con su ID y número
-            return { id: pedidoRef.id, ...pedidoData };
+            // 6. Retroalimentación y Retorno:
+            console.log(`✅ Pedido creado: ${pedidoId} - ${pedidoData.numero}`);
+            return { id: pedidoId, ...pedidoData };
             
         } catch (error) {
             console.error('❌ Error creando pedido:', error);
@@ -79,103 +76,113 @@ class Pedido {
         }
     }
 
-    /**
-     * Genera un número de pedido basado en el conteo de pedidos del mes actual.
-     * Formato: PED-YYYYMM-XXXX (ej: PED-202510-0015).
-     * @returns {string} El número de pedido generado.
-     */
+    // --- Método de Instancia Privado/Auxiliar: Generar Número de Pedido ---
+    // Genera un número de pedido con un formato basado en la fecha y un consecutivo mensual.
     async generarNumeroPedido() {
         const today = new Date();
         const year = today.getFullYear();
-        // El mes se paddea a dos dígitos (01-12)
+        // Obtiene el mes y le añade un '0' al principio si es necesario (ej: 01, 10).
         const month = String(today.getMonth() + 1).padStart(2, '0');
         
-        // 1. Calcular el primer día del mes para el filtro de la consulta
+        // Determina el inicio del mes actual para la consulta.
         const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
         
-        // 2. Contar pedidos del mes actual (usando 'fechaCreacion' y consulta)
+        // 1. Contar Pedidos del Mes:
+        // Consulta todos los pedidos creados a partir del primer día del mes actual.
+        // NOTA: Para que esto funcione, 'fechaCreacion' debe estar indexado en Firestore.
         const snapshot = await db.collection('pedidos')
-            .where('fechaCreacion', '>=', firstDay) // Filtrar por pedidos de este mes
+            .where('fechaCreacion', '>=', firstDay)
             .get();
         
-        // 3. El consecutivo es el tamaño del snapshot + 1
+        // El consecutivo será el número de documentos encontrados + 1.
         const consecutivo = snapshot.size + 1;
         
-        // 4. Formatear y devolver el número de pedido
+        // 2. Formatear y Retornar:
+        // Crea el formato 'PED-AAAA-MM-NNNN' (ej: PED-202510-0001).
         return `PED-${year}${month}-${String(consecutivo).padStart(4, '0')}`;
     }
 
-    // -------------------------------------------------------------------------
-    // Métodos Estáticos (Operaciones de Lectura y Modificación)
-    // -------------------------------------------------------------------------
-
-    /**
-     * Busca y recupera un pedido por su ID de documento.
-     * @param {string} id - ID del documento del pedido.
-     * @returns {object|null} El objeto del pedido encontrado o null si no existe.
-     */
+    // --- Método Estático: Buscar por ID Autoincrementable ---
+    // Busca un pedido utilizando el campo 'id' numérico.
     static async findById(id) {
         try {
-            const doc = await db.collection('pedidos').doc(id).get();
-            if (!doc.exists) {
+            const snapshot = await db.collection('pedidos')
+                .where('id', '==', id)
+                .limit(1)
+                .get();
+            
+            if (snapshot.empty) {
                 return null;
             }
-            // Devolver los datos del documento (incluyendo el ID)
-            return { id: doc.id, ...doc.data() };
+            
+            const doc = snapshot.docs[0];
+            // Retorna los datos junto con el ID de Firestore ('firestoreId').
+            return { firestoreId: doc.id, ...doc.data() };
         } catch (error) {
             console.error('❌ Error buscando pedido:', error);
             throw error;
         }
     }
 
-    /**
-     * Recupera todos los pedidos, ordenados por fecha de creación descendente.
-     * @returns {Array<object>} Una lista de objetos de pedidos.
-     */
+    // --- Método Estático: Obtener Todos los Pedidos ---
+    // Recupera todos los pedidos, ordenados por la fecha de creación descendente.
     static async findAll() {
         try {
             const snapshot = await db.collection('pedidos')
-                .orderBy('fechaCreacion', 'desc') // Ordenar del más reciente al más antiguo
+                .orderBy('fechaCreacion', 'desc')
                 .get();
-                
-            return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            // Mapea los documentos a un array de objetos.
+            return snapshot.docs.map(doc => ({
+                firestoreId: doc.id,
+                ...doc.data()
+            }));
         } catch (error) {
             console.error('❌ Error obteniendo pedidos:', error);
             throw error;
         }
     }
 
-    /**
-     * Recupera pedidos asociados a un vendedor específico.
-     * @param {string} vendedorId - ID del usuario vendedor.
-     * @returns {Array<object>} Una lista de pedidos del vendedor.
-     */
+    // --- Método Estático: Obtener Pedidos por Vendedor ---
+    // Filtra y ordena los pedidos por un 'vendedorId' específico.
+    // NOTA: Esta consulta requerirá un índice compuesto en Firestore si se usa `where` y `orderBy` en diferentes campos.
     static async findByVendedor(vendedorId) {
         try {
             const snapshot = await db.collection('pedidos')
-                .where('vendedorId', '==', vendedorId) // Filtrar por vendedor
+                .where('vendedorId', '==', vendedorId)
                 .orderBy('fechaCreacion', 'desc')
                 .get();
-                
-            return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            return snapshot.docs.map(doc => ({
+                firestoreId: doc.id,
+                ...doc.data()
+            }));
         } catch (error) {
             console.error('❌ Error obteniendo pedidos por vendedor:', error);
             throw error;
         }
     }
 
-    /**
-     * Actualiza el estado de un pedido y registra la fecha de modificación.
-     * @param {string} id - ID del documento del pedido a actualizar.
-     * @param {string} nuevoEstado - El nuevo estado del pedido.
-     */
+    // --- Método Estático: Actualizar Estado del Pedido ---
+    // Actualiza únicamente el campo 'estado' de un pedido.
     static async updateEstado(id, nuevoEstado) {
         try {
-            await db.collection('pedidos').doc(id).update({
-                estado: nuevoEstado,
-                fechaActualizacion: new Date()
-            });
+            // 1. Buscar el documento por el 'id' numérico para obtener el 'firestoreId'.
+            const snapshot = await db.collection('pedidos')
+                .where('id', '==', id)
+                .limit(1)
+                .get();
             
+            if (snapshot.empty) {
+                throw new Error('Pedido no encontrado');
+            }
+            
+            const doc = snapshot.docs[0];
+            
+            // 2. Aplicar la actualización:
+            // Usa el 'firestoreId' (doc.id) para la operación 'update'.
+            await db.collection('pedidos').doc(doc.id).update({
+                estado: nuevoEstado,
+                fechaActualizacion: new Date() // Registra la fecha de modificación.
+            });
             console.log(`✅ Estado de pedido actualizado: ${id} -> ${nuevoEstado}`);
         } catch (error) {
             console.error('❌ Error actualizando estado de pedido:', error);
@@ -183,19 +190,18 @@ class Pedido {
         }
     }
 
-    /**
-     * Recupera todos los pedidos que se encuentran en un estado específico.
-     * @param {string} estado - El estado por el que filtrar (ej: 'pendiente').
-     * @returns {Array<object>} Una lista de pedidos con ese estado.
-     */
+    // --- Método Estático: Obtener Pedidos por Estado ---
+    // Filtra y ordena los pedidos por su 'estado' actual.
     static async findByEstado(estado) {
         try {
             const snapshot = await db.collection('pedidos')
-                .where('estado', '==', estado) // Filtrar por estado
+                .where('estado', '==', estado)
                 .orderBy('fechaCreacion', 'desc')
                 .get();
-                
-            return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            return snapshot.docs.map(doc => ({
+                firestoreId: doc.id,
+                ...doc.data()
+            }));
         } catch (error) {
             console.error('❌ Error obteniendo pedidos por estado:', error);
             throw error;
@@ -203,4 +209,5 @@ class Pedido {
     }
 }
 
-module.exports = Pedido; // Exportar la clase modelo
+// Exporta la clase para su uso.
+module.exports = Pedido;

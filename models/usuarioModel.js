@@ -1,206 +1,208 @@
-const { db } = require('../config/firebase'); // Importa la instancia de Firestore
-const bcrypt = require('bcryptjs'); // Importa la librería para el hashing de contraseñas
+// Importa la instancia de la base de datos de Firebase configurada.
+const { db } = require('../config/firebase'); 
+// Importa la librería bcryptjs para hashear y comparar contraseñas de forma segura.
+const bcrypt = require('bcryptjs'); 
+// Importa la utilidad para generar IDs numéricos secuenciales personalizados (necesario en Firestore).
+const AutoIncrement = require('../utils/autoIncrement'); 
 
-/**
- * Clase Modelo para gestionar los Usuarios y su Autenticación.
- * Esta clase se encarga del hashing de contraseñas y la interacción con la colección 'usuarios' en Firestore.
- */
+// --- Definición de la Clase Modelo 'Usuario' ---
 class Usuario {
-    /**
-     * Constructor para crear una nueva instancia de Usuario.
-     * @param {object} data - Objeto con los datos iniciales del usuario.
-     */
-    constructor(data) {
-        // 1. Datos de autenticación
-        this.email = data.email;
-        this.password = data.password; // La contraseña se hasheará antes de guardarse
-        
-        // 2. Datos personales y roles
-        this.nombre = data.nombre;
-        this.apellido = data.apellido;
-        this.rol = data.rol || 'empleado'; // Rol por defecto: 'empleado'
-        
-        // 3. Control de estado (Soft Delete)
-        this.activo = data.activo !== undefined ? data.activo : true;
-        
-        // 4. Marca de tiempo de creación
-        this.fechaCreacion = new Date();
-    }
+    // El constructor inicializa una nueva instancia de Usuario.
+    constructor(data) {
+        this.email = data.email; 
+        this.password = data.password; // La contraseña se guarda aquí temporalmente, antes de ser hasheada.
+        this.nombre = data.nombre;
+        this.apellido = data.apellido;
+        // Asigna el rol, por defecto 'empleado'.
+        this.rol = data.rol || 'empleado'; 
+        // Usa 'activo' para la eliminación lógica, por defecto es true.
+        this.activo = data.activo !== undefined ? data.activo : true; 
+        // Marca de tiempo del registro.
+        this.fechaCreacion = new Date(); 
+    }
 
-    // -------------------------------------------------------------------------
-    // Métodos de Seguridad y Autenticación
-    // -------------------------------------------------------------------------
+    // --- Métodos de Seguridad ---
+    // Hashea la contraseña de la instancia actual de forma asíncrona.
+    async hashPassword() {
+        // Usa bcrypt para hashear la contraseña con un costo de 10.
+        this.password = await bcrypt.hash(this.password, 10); 
+    }
 
-    /**
-     * Hashea la contraseña de la instancia usando bcryptjs.
-     */
-    async hashPassword() {
-        // Genera un salt y hashea la contraseña, reemplazando el valor en la instancia
-        this.password = await bcrypt.hash(this.password, 10);
-    }
+    // Compara una contraseña plana con el hash almacenado en la instancia.
+    async comparePassword(password) {
+        return await bcrypt.compare(password, this.password); // Devuelve true o false.
+    }
 
-    /**
-     * Compara una contraseña plana con la contraseña hasheada almacenada en la instancia.
-     * @param {string} password - La contraseña plana ingresada por el usuario.
-     * @returns {Promise<boolean>} True si coinciden, false en caso contrario.
-     */
-    async comparePassword(password) {
-        return await bcrypt.compare(password, this.password);
-    }
+    // --- Método de Instancia: Guardar (Crear) un Nuevo Documento ---
+    async save() {
+        try {
+            await this.hashPassword(); // Llama a hashear la contraseña antes de guardar.
+            
+            // 1. Genera el ID numérico personalizado para el usuario.
+            const userId = await AutoIncrement.generateId('usuarios'); 
+            // 2. Obtiene una referencia a un nuevo documento, generando el ID de Firestore.
+            const usuarioRef = db.collection('usuarios').doc(); 
+            
+            // 3. Prepara los datos a guardar.
+            const usuarioData = {
+                id: userId, // ID autoincremental personalizado.
+                firestoreId: usuarioRef.id, // ID original de Firestore.
+                email: this.email,
+                password: this.password, // Guarda la contraseña ya hasheada.
+                nombre: this.nombre,
+                apellido: this.apellido,
+                rol: this.rol,
+                activo: this.activo,
+                fechaCreacion: this.fechaCreacion
+            };
+            
+            await usuarioRef.set(usuarioData); // Guarda el documento.
+            console.log(`✅ Usuario creado: ${userId} - ${this.email}`); // Log de éxito.
+            
+            return { id: userId, ...usuarioData }; // Devuelve el usuario creado.
+            
+        } catch (error) {
+            console.error('❌ Error creando usuario:', error);
+            throw error;
+        }
+    }
 
-    // -------------------------------------------------------------------------
-    // Métodos de Instancia (Operación de Escritura)
-    // -------------------------------------------------------------------------
+    // --- Método Estático: Buscar por Email (Usado para Login) ---
+    static async findByEmail(email) {
+        try {
+            // Consulta para buscar un usuario por su campo 'email'.
+            const snapshot = await db.collection('usuarios')
+                .where('email', '==', email) // Filtra por email (asumido como único).
+                .limit(1)
+                .get();
+            
+            if (snapshot.empty) {
+                return null; // No encontrado.
+            }
+            
+            const doc = snapshot.docs[0];
+            return { 
+                firestoreId: doc.id,  // Devuelve el ID de Firestore.
+                ...doc.data()         // Devuelve todos los datos, incluido el ID personalizado y el hash.
+            };
+            
+        } catch (error) {
+            console.error('❌ Error buscando usuario:', error);
+            throw error;
+        }
+    }
 
-    /**
-     * Hashea la contraseña y guarda la nueva instancia de Usuario en Firestore.
-     * @returns {object} El objeto del usuario guardado, incluyendo el ID.
-     */
-    async save() {
-        try {
-            // 1. Hashear la contraseña antes de guardarla
-            await this.hashPassword(); 
-            
-            // 2. Crear una referencia de documento y obtener el ID
-            const usuarioRef = db.collection('usuarios').doc();
-            
-            // 3. Preparar el objeto de datos a guardar
-            const usuarioData = {
-                id: usuarioRef.id, // Almacenar el ID como un campo
-                email: this.email,
-                password: this.password, // Contraseña hasheada
-                nombre: this.nombre,
-                apellido: this.apellido,
-                rol: this.rol,
-                activo: this.activo,
-                fechaCreacion: this.fechaCreacion
-            };
-            
-            // 4. Escribir los datos en Firestore
-            await usuarioRef.set(usuarioData);
-            
-            console.log(`✅ Usuario creado: ${this.email}`);
-            
-            // 5. Devolver el usuario creado
-            return { id: usuarioRef.id, ...usuarioData };
-            
-        } catch (error) {
-            console.error('❌ Error creando usuario:', error);
-            throw error;
-        }
-    }
+    // --- Método Estático: Buscar por ID Personalizado ---
+    static async findById(id) {
+        try {
+            console.log(`🔍 Buscando usuario por ID personalizado: ${id}`); // Log de depuración.
+            
+            // Consulta que busca por el campo 'id' autoincremental.
+            const snapshot = await db.collection('usuarios')
+                .where('id', '==', id)  // Usa el ID de la aplicación, no el de Firestore.
+                .limit(1)
+                .get();
+            
+            console.log(`📊 Resultados encontrados: ${snapshot.size}`); // Log de depuración.
+            
+            if (snapshot.empty) {
+                console.log(`❌ Usuario no encontrado con ID: ${id}`);
+                return null;
+            }
+            
+            const doc = snapshot.docs[0];
+            console.log(`✅ Usuario encontrado: ${doc.data().email}`);
+            
+            return { 
+                firestoreId: doc.id,  // Devuelve el ID de Firestore.
+                ...doc.data()         // Devuelve todos los datos.
+            };
+            
+        } catch (error) {
+            console.error('❌ Error buscando usuario por ID:', error);
+            throw error;
+        }
+    }
 
-    // -------------------------------------------------------------------------
-    // Métodos Estáticos (Operaciones de Lectura y Modificación)
-    // -------------------------------------------------------------------------
+    // --- Método Estático: Obtener Todos los Usuarios ---
+    static async findAll() {
+        try {
+            const snapshot = await db.collection('usuarios').get(); // Trae toda la colección.
+            // Mapea los resultados.
+            return snapshot.docs.map(doc => ({ 
+                firestoreId: doc.id,  // ID de Firestore.
+                ...doc.data()         // Todos los datos.
+            }));
+            
+        } catch (error) {
+            console.error('❌ Error obteniendo usuarios:', error);
+            throw error;
+        }
+    }
 
-    /**
-     * Busca y recupera un usuario por su dirección de email. (Usado para login)
-     * @param {string} email - El email del usuario.
-     * @returns {object|null} El objeto del usuario encontrado (incluyendo password) o null.
-     */
-    static async findByEmail(email) {
-        try {
-            // 1. Consultar la base de datos buscando el email
-            const snapshot = await db.collection('usuarios')
-                .where('email', '==', email)
-                .limit(1) // Asumimos que el email es único
-                .get();
-            
-            if (snapshot.empty) {
-                return null;
-            }
-            
-            // 2. Devolver los datos del documento
-            const doc = snapshot.docs[0];
-            return { id: doc.id, ...doc.data() };
-            
-        } catch (error) {
-            console.error('❌ Error buscando usuario:', error);
-            throw error;
-        }
-    }
+    // --- Método Estático: Actualizar un Usuario ---
+    static async update(id, data) {
+        try {
+            // 1. Busca el documento por ID personalizado para obtener el firestoreId.
+            const snapshot = await db.collection('usuarios')
+                .where('id', '==', id)
+                .limit(1)
+                .get();
+            
+            if (snapshot.empty) {
+                throw new Error('Usuario no encontrado');
+            }
+            
+            const doc = snapshot.docs[0];
+            
+            // Prevención de seguridad: No se permite actualizar la contraseña aquí.
+            if (data.password) { 
+                delete data.password; // Si se intenta pasar, se elimina del objeto de actualización.
+            }
+            
+            // 2. Actualiza el documento usando el ID de Firestore.
+            await db.collection('usuarios').doc(doc.id).update({
+                ...data, // Aplica los cambios restantes.
+                fechaActualizacion: new Date() // Marca de tiempo de la actualización.
+            });
+            
+            console.log(`✅ Usuario actualizado: ${id}`);
+            
+        } catch (error) {
+            console.error('❌ Error actualizando usuario:', error);
+            throw error;
+        }
+    }
 
-    /**
-     * Busca y recupera un usuario por su ID de documento.
-     * @param {string} id - ID del documento del usuario.
-     * @returns {object|null} El objeto del usuario encontrado o null.
-     */
-    static async findById(id) {
-        try {
-            const doc = await db.collection('usuarios').doc(id).get();
-            if (!doc.exists) {
-                return null;
-            }
-            return { id: doc.id, ...doc.data() };
-            
-        } catch (error) {
-            console.error('❌ Error buscando usuario por ID:', error);
-            throw error;
-        }
-    }
-
-    /**
-     * Recupera todos los usuarios de la base de datos.
-     * @returns {Array<object>} Una lista de todos los objetos de usuario.
-     */
-    static async findAll() {
-        try {
-            const snapshot = await db.collection('usuarios').get();
-            return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-            
-        } catch (error) {
-            console.error('❌ Error obteniendo usuarios:', error);
-            throw error;
-        }
-    }
-
-    /**
-     * Actualiza uno o más campos de un usuario específico.
-     * @param {string} id - ID del documento a actualizar.
-     * @param {object} data - Objeto con los campos y valores a modificar.
-     */
-    static async update(id, data) {
-        try {
-            // 1. **Mecanismo de Seguridad:** Prevenir que se actualice la contraseña
-            // mediante la función de actualización de datos generales (debe usarse cambiarPassword).
-            if (data.password) {
-                delete data.password;
-            }
-            
-            // 2. Actualizar el documento en Firestore
-            await db.collection('usuarios').doc(id).update({
-                ...data, // Esparcir los campos recibidos (ej: nombre, apellido, rol, activo)
-                fechaActualizacion: new Date()
-            });
-            
-            console.log(`✅ Usuario actualizado: ${id}`);
-            
-        } catch (error) {
-            console.error('❌ Error actualizando usuario:', error);
-            throw error;
-        }
-    }
-
-    /**
-     * Realiza una eliminación suave (soft delete) marcando el usuario como inactivo.
-     * @param {string} id - ID del documento a eliminar suavemente.
-     */
-    static async delete(id) {
-        try {
-            // 1. Actualizar el campo 'activo' a false y registrar la fecha de eliminación
-            await db.collection('usuarios').doc(id).update({
-                activo: false,
-                fechaEliminacion: new Date()
-            });
-            
-            console.log(`✅ Usuario marcado como inactivo: ${id}`);
-            
-        } catch (error) {
-            console.error('❌ Error eliminando usuario:', error);
-            throw error;
-        }
-    }
+    // --- Método Estático: Eliminación Lógica (Soft Delete) ---
+    static async delete(id) {
+        try {
+            // 1. Busca el documento por ID personalizado.
+            const snapshot = await db.collection('usuarios')
+                .where('id', '==', id)
+                .limit(1)
+                .get();
+            
+            if (snapshot.empty) {
+                throw new Error('Usuario no encontrado');
+            }
+            
+            const doc = snapshot.docs[0];
+            
+            // 2. Realiza la eliminación lógica.
+            await db.collection('usuarios').doc(doc.id).update({
+                activo: false, // Marca el usuario como inactivo.
+                fechaEliminacion: new Date()
+            });
+            
+            console.log(`✅ Usuario marcado como inactivo: ${id}`);
+            
+        } catch (error) {
+            console.error('❌ Error eliminando usuario:', error);
+            throw error;
+        }
+    }
 }
 
-module.exports = Usuario; // Exportar la clase modelo
+// Exporta la clase para su uso.
+module.exports = Usuario;
